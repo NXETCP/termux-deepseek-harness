@@ -36,20 +36,52 @@ log_info "npm 版本: $(npm -v)"
 log_info "正在全局安装 @deepseek-ai/dsh (DeepSeek Harness CLI)..."
 npm install -g @deepseek-ai/dsh
 
-# 3. 针对 Termux 环境修复 shebang
-if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
-    log_info "检测到 Termux 环境，正在修复可执行文件 shebang..."
-    if command -v termux-fix-shebang >/dev/null 2>&1; then
-        DSH_BIN="$(command -v dsh || true)"
-        if [ -n "$DSH_BIN" ]; then
-            termux-fix-shebang "$DSH_BIN"
+# 3. 针对 Termux / Node.js 环境修复启动包装器
+# dsh 的 HMR 及 loader 服务依赖 node --expose-internals
+# Termux 环境下默认的 /data/data/com.termux/files/usr/bin/dsh 符号链接缺少该 flag
+log_info "配置 dsh 启动包装脚本 (注入 --expose-internals 标志)..."
+GLOBAL_NODE_DIR="$(npm root -g 2>/dev/null || echo '')"
+DSH_REAL_BIN="${GLOBAL_NODE_DIR}/@deepseek-ai/dsh/lib/bin.js"
+
+if [ -f "$DSH_REAL_BIN" ]; then
+    DSH_TARGET="$(command -v dsh || echo '')"
+    if [ -n "$DSH_TARGET" ]; then
+        cat <<EOF > "$DSH_TARGET"
+#!/data/data/com.termux/files/usr/bin/sh
+exec node --expose-internals "$DSH_REAL_BIN" "\$@"
+EOF
+        chmod +x "$DSH_TARGET"
+        if command -v termux-fix-shebang >/dev/null 2>&1; then
+            termux-fix-shebang "$DSH_TARGET"
         fi
+    fi
+fi
+
+if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
+    # 修复 open 包自带的 xdg-open 在 Termux 中无图形浏览器报错的问题
+    OPEN_XDG_BIN="${GLOBAL_NODE_DIR}/@deepseek-ai/dsh/node_modules/open/xdg-open"
+    if [ -f "$OPEN_XDG_BIN" ]; then
+        cat <<'EOF' > "$OPEN_XDG_BIN"
+#!/bin/sh
+if command -v termux-open >/dev/null 2>&1; then
+    exec termux-open "$@"
+elif command -v termux-open-url >/dev/null 2>&1; then
+    exec termux-open-url "$@"
+else
+    exit 0
+fi
+EOF
+        chmod +x "$OPEN_XDG_BIN"
+        if command -v termux-fix-shebang >/dev/null 2>&1; then
+            termux-fix-shebang "$OPEN_XDG_BIN"
+        fi
+    fi
+
+    if command -v termux-fix-shebang >/dev/null 2>&1; then
         PNPM_BIN="$(command -v pnpm || true)"
         if [ -n "$PNPM_BIN" ]; then
             termux-fix-shebang "$PNPM_BIN"
         fi
-    else
-        log_warn "未找到 termux-fix-shebang 命令，跳过修复"
     fi
 fi
 
